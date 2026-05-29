@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HK Mahjong Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .auto-checked-label { background-color: rgba(180,120,0,0.18); border: 1px solid rgba(245,158,11,0.35); }
+    .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: #1f2937; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 2px; }
+    #tooltip {
+      position: fixed; z-index: 9999; pointer-events: none;
+      background: #0f172a; color: #e2e8f0;
+      border: 1px solid #334155; border-radius: 8px;
+      padding: 8px 12px; font-size: 12px; line-height: 1.6;
+      max-width: 280px; box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      display: none; white-space: normal;
+    }
+  </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+<div id="tooltip"></div>
+<div id="app"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// TOOLTIP
+// ─────────────────────────────────────────────
+const _tip = () => document.getElementById('tooltip');
+window.showTip = function(e, id) {
+  const text = TOOLTIPS[id]; if (!text) return;
+  const el = _tip(); el.textContent = text; el.style.display = 'block';
+  _moveTip(e);
+};
+window.hideTip = function() { _tip().style.display = 'none'; };
+window.moveTip = function(e) { _moveTip(e); };
+function _moveTip(e) {
+  const el = _tip(); if (!el) return;
+  const x = e.clientX + 14, y = e.clientY;
+  const w = el.offsetWidth || 280, h = el.offsetHeight || 60;
+  el.style.left = Math.min(x, window.innerWidth  - w - 8) + 'px';
+  el.style.top  = Math.max(8, y - h - 8) + 'px';
+}
+
+// ─────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────
+const WINDS = ['East','South','West','North'];
+const WIND_CN = ['東','南','西','北'];
+
+// ─────────────────────────────────────────────
+// GAME STATE
+// ─────────────────────────────────────────────
+let G = {
+  players: ['','','',''],
+  scores:  [0,0,0,0],
+  wins:    [0,0,0,0],
+  dealerIdx: 0,
+  roundWindIdx: 0,
+  minFan: 3,
+  forfeitFan: 13,
+  flowersInGame: true,
+  discardOnlyDiscarderPays: false,
+  selfPickDoubles: true,
+  dealerDoubles: true,
+  pointsTable: 'classic',
+  started: false,
+  history: [],
+  handNum: 1
+};
+
+// Undo/redo — each entry is a deep-frozen snapshot of G
+let undoStack = [];
+let redoStack = [];
+
+function snapshotG() { return JSON.parse(JSON.stringify(G)); }
+
+function pushUndo() {
+  undoStack.push(snapshotG());
+  redoStack = []; // new action clears redo branch
+}
+
+// ─────────────────────────────────────────────
+// ACTION STATE  (current hand being scored)
+// ─────────────────────────────────────────────
+let A = {};
+function resetA() {
+  A = {
+    winner: null,
+    winType: 'discard',  // 'selfPick' | 'discard' — default to discard
+    discarder: null,
+    c: {
+      // A
+      selfPick:false, concealedHand:false, robbingKong:false,
+      moonUnderSea:false, kongReplacement:false, doubleKong:false,
+      blessingHeaven:false, blessingEarth:false, blessingMan:false,
+      // B
+      allSequences:false, allTriplets:false,
+      allConcealedTriplets:false, allQuadruplets:false,
+      // C
+      mixedFlush:false, fullFlush:false,
+      mixedTerminals:false, allTerminals:false, allHonours:false,
+      // D
+      dragonTriplets:0, seatWindTriplet:false, roundWindTriplet:false,
+      smallThreeDragons:false, bigThreeDragons:false,
+      smallFourWinds:false, bigFourWinds:false,
+      // E
+      noFlowers:false, seatFlower:0,
+      allFlowers:false, sevenFlowers:false, eightFlowers:false,
+      // F
+      sevenPairs:false, thirteenOrphans:false, nineGates:false
+    }
+  };
+}
+resetA();
+
+// ─────────────────────────────────────────────
+// FAN CATEGORY DEFINITIONS
+// ─────────────────────────────────────────────
+const CATS = [
+  { id:'A', label:'Win Actions', items:[
+    {id:'selfPick',          label:'Self-Pick',                fan:1},
+    {id:'concealedHand',     label:'Concealed Hand',           fan:1},
+    {id:'robbingKong',       label:'Robbing the Kong',         fan:1},
+    {id:'moonUnderSea',      label:'Moon Under The Sea',       fan:1},
+    {id:'kongReplacement',   label:'Win by Kong Replacement',  fan:1},
+    {id:'doubleKong',        label:'Double Kong Replacement',  fan:7},
+    {id:'blessingHeaven',    label:'Blessing of Heaven',       fan:13},
+    {id:'blessingEarth',     label:'Blessing of Earth',        fan:13},
+    {id:'blessingMan',       label:'Blessing of Man',          fan:13},
+  ]},
+  { id:'B', label:'Set Types', items:[
+    {id:'allSequences',          label:'All Sequences',            fan:1},
+    {id:'allTriplets',           label:'All Triplets',             fan:3},
+    {id:'allConcealedTriplets',  label:'All Concealed Triplets',   fan:5},
+    {id:'allQuadruplets',        label:'All Quadruplets',          fan:10},
+  ]},
+  { id:'C', label:'Suit & Terminal Patterns', items:[
+    {id:'mixedFlush',    label:'Mixed Flush',     fan:3},
+    {id:'fullFlush',     label:'Full Flush',      fan:7},
+    {id:'mixedTerminals',label:'Mixed Terminals', fan:1},
+    {id:'allTerminals',  label:'All Terminals',   fan:10},
+    {id:'allHonours',    label:'All Honours',     fan:7},
+  ]},
+  { id:'D', label:'Winds & Dragons', items:[
+    {id:'dragonTriplets',    label:'Dragon Triplet',    fan:1, type:'dropdown', max:3},
+    {id:'seatWindTriplet',   label:'Seat Wind Triplet', fan:1},
+    {id:'roundWindTriplet',  label:'Round Wind Triplet',fan:1},
+    {id:'smallThreeDragons', label:'Small Three Dragons',fan:3},
+    {id:'bigThreeDragons',   label:'Big Three Dragons', fan:5},
+    {id:'smallFourWinds',    label:'Small Four Winds',  fan:6},
+    {id:'bigFourWinds',      label:'Big Four Winds',    fan:13},
+  ]},
+  { id:'E', label:'Flowers & Seasons', items:[
+    {id:'noFlowers',  label:'No Flowers or Seasons',        fan:1},
+    {id:'seatFlower', label:'Seat Flower or Season',        fan:1, type:'dropdown', max:2},
+    {id:'allFlowers', label:'All Flowers OR All Seasons',   fan:2},
+    {id:'sevenFlowers',label:'Seven Flowers',               fan:3},
+    {id:'eightFlowers',label:'Eight Flowers',               fan:8},
+  ]},
+  { id:'F', label:'Special Limit Hands', items:[
+    {id:'sevenPairs',      label:'Seven Pairs',     fan:4},
+    {id:'thirteenOrphans', label:'Thirteen Orphans',fan:13},
+    {id:'nineGates',       label:'Nine Gates',      fan:13},
+  ]},
+];
+
+// ─────────────────────────────────────────────
+// TOOLTIPS
+// ─────────────────────────────────────────────
+const TOOLTIPS = {
+  // A
+  selfPick:           'Zimo (自摸): You drew the winning tile yourself from the wall.',
+  concealedHand:      'Menqian Qing (門前清): Your hand has no exposed melds — all sets are concealed.',
+  robbingKong:        'Qiang Gang (搶槓): You won by claiming a tile your opponent added to an existing exposed pung to form a kong. Implies Discard win type.',
+  moonUnderSea:       'Hai Di Lao Yue (海底撈月): You won on the very last tile — either by drawing the last tile from the wall (self-pick) or by claiming the final discard.',
+  kongReplacement:    'Gang Shang Hua (槓上花): You won by drawing the replacement tile after declaring a kong. Automatically includes Self-Pick (+1 fan) for 2 fan total.',
+  doubleKong:         'Gang Shang Kong (槓上槓): You called a kong, the replacement tile completed a second kong, and you won on the second replacement — extremely rare. Automatically includes Kong Replacement (+1) and Self-Pick (+1) for 9 fan total.',
+  blessingHeaven:     'Tian Hu (天和): Dealer wins on their very first self-drawn tile before anyone discards. 13-fan limit hand.',
+  blessingEarth:      'Di Hu (地和): Non-dealer wins on the dealer\'s very first discard before taking any turn. 13-fan limit hand.',
+  blessingMan:        'Ren Hu (人和): Non-dealer wins by self-picking on their very first draw. 13-fan limit hand.',
+  // B
+  allSequences:       'Ping He (平和): All four sets are sequences (chows). No triplets or kongs allowed. Incompatible with All Triplets, All Honours, All Terminals, and all Winds & Dragons.',
+  allTriplets:        'Dui Dui Hu (對對胡): All four sets are triplets or kongs. No sequences.',
+  allConcealedTriplets:'An Ke (暗刻): All four sets are concealed triplets. Automatically includes All Triplets (+3 fan) for 8 fan total.',
+  allQuadruplets:     'Si Gang (四槓): All four sets are kongs (quadruplets). Automatically includes All Triplets (+3 fan) for 13 fan total. Extremely rare.',
+  // C
+  mixedFlush:         'Hun Yi Se (混一色): All tiles from one suit plus wind/dragon honour tiles. Incompatible with Full Flush and All Honours.',
+  fullFlush:          'Qing Yi Se (清一色): All tiles from a single suit with no honour tiles. Incompatible with Mixed Flush and All Honours.',
+  mixedTerminals:     'Hun Lao Tou (混么九): Every set contains at least one terminal (1 or 9) or honour tile. Automatically includes All Triplets (+3 fan) for 4 fan total.',
+  allTerminals:       'Qing Lao Tou (清么九): All tiles are terminals (1s and 9s only). Automatically includes All Triplets (+3 fan) for 13 fan total. Incompatible with All Sequences and All Honours.',
+  allHonours:         'Zi Yi Se (字一色): All tiles are honour tiles (winds and dragons). Automatically includes All Triplets (+3 fan) for 10 fan total. Incompatible with all suit/terminal patterns.',
+  // D
+  dragonTriplets:     'Zhong/Fa/Bai (中發白): Number of dragon triplets (Red, Green, White). +1 fan each. Incompatible with All Sequences and Big Four Winds.',
+  seatWindTriplet:    'Men Feng Ke (門風刻): A triplet of the winner\'s own seat wind. +1 fan.',
+  roundWindTriplet:   'Juan Feng Ke (圈風刻): A triplet of the current round wind. +1 fan.',
+  smallThreeDragons:  'Xiao San Yuan (小三元): Two dragon triplets plus a pair of the third dragon. Automatically includes 2 Dragon Triplets (+2 fan) for 5 fan total. Incompatible with Four Winds hands.',
+  bigThreeDragons:    'Da San Yuan (大三元): Triplets of all three dragons (Red, Green, White). Automatically includes 3 Dragon Triplets (+3 fan) for 8 fan total. Incompatible with Four Winds hands.',
+  smallFourWinds:     'Xiao Si Xi (小四喜): Triplets of three winds plus a pair of the fourth wind. Incompatible with Three Dragons hands.',
+  bigFourWinds:       'Da Si Xi (大四喜): Triplets of all four winds. No room for dragon sets. Incompatible with Three Dragons hands.',
+  // E
+  noFlowers:          'No flowers or season tiles were set aside this hand. +1 fan.',
+  seatFlower:         'You have your own seat flower and/or seat season tile(s). +1 fan each (max 2).',
+  allFlowers:         'You have a complete set of all four flower tiles OR all four season tiles. +2 fan.',
+  sevenFlowers:       'You have seven of the eight flower/season tiles. +3 fan.',
+  eightFlowers:       'You have all eight flower and season tiles. +8 fan limit.',
+  // F
+  sevenPairs:         'Qi Dui (七對): The winning hand consists of seven pairs instead of four sets + one pair. Disables B/C/D categories.',
+  thirteenOrphans:    'Shi San Yao (十三么): One each of 1m,9m,1p,9p,1s,9s and all seven honours, plus one duplicate. 13-fan limit. Disables B/C/D.',
+  nineGates:          'Jiu Lian Bao Deng (九蓮寶燈): 1-1-1-2-3-4-5-6-7-8-9-9-9 in one suit plus any tile of the same suit. 13-fan limit. Disables B/C/D.',
+};
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+const FAN_TABLE_CLASSIC = [1,2,4,8,16,16,16,32,32,32,64,64,64,128];
+const FAN_TABLE_NEW     = [1,2,4,8,16,24,32,48,64,96,128,192,256,384];
+function fanToBase(f) {
+  const tbl = G.pointsTable === 'new' ? FAN_TABLE_NEW : FAN_TABLE_CLASSIC;
+  if (f <= 0) return tbl[0];
+  if (f >= 13) return tbl[13];
+  return tbl[f];
+}
+
+function seatWind(playerIdx) {
+  return WINDS[(playerIdx - G.dealerIdx + 4) % 4];
+}
+
+function isSpecialHand() {
+  return A.c.sevenPairs || A.c.thirteenOrphans || A.c.nineGates;
+}
+
+function isFlowerWin() {
+  return A.c.sevenFlowers || A.c.eightFlowers;
+}
+
+function isTripletAutoChecked() {
+  return A.c.allHonours || A.c.allTerminals || A.c.mixedTerminals || A.c.allConcealedTriplets || A.c.allQuadruplets;
+}
+
+// Returns {disabled, autoChecked, hidden} for a given item id
+function itemState(id) {
+  const c = A.c;
+  const special = isSpecialHand();
+
+  const BCD = ['allSequences','allTriplets','allConcealedTriplets','allQuadruplets',
+               'mixedFlush','fullFlush','mixedTerminals','allTerminals','allHonours',
+               'dragonTriplets','seatWindTriplet','roundWindTriplet','smallThreeDragons',
+               'bigThreeDragons','smallFourWinds','bigFourWinds'];
+  if ((special || isFlowerWin()) && BCD.includes(id)) return {disabled:true, autoChecked:false, hidden:true};
+
+  if (id === 'allTriplets' && isTripletAutoChecked())
+    return {disabled:true, autoChecked:true, hidden:false};
+
+  if (id === 'selfPick' && (c.kongReplacement || c.doubleKong))
+    return {disabled:true, autoChecked:true, hidden:false};
+  if (id === 'kongReplacement' && c.doubleKong)
+    return {disabled:true, autoChecked:true, hidden:false};
+
+  if (id === 'dragonTriplets' && (c.smallThreeDragons || c.bigThreeDragons))
+    return {disabled:true, autoChecked:true, hidden:false};
+
+  return {disabled:false, autoChecked:false, hidden:false};
+}
+
+// ─────────────────────────────────────────────
+// FAN CALCULATION
+// ─────────────────────────────────────────────
+function calcFan() {
+  const c = A.c;
+  const special = isSpecialHand();
+  let f = 0;
+  // A
+  if (c.selfPick || A.winType==='selfPick') f+=1;
+  if (c.concealedHand)   f+=1;
+  if (c.robbingKong)     f+=1;
+  if (c.moonUnderSea)    f+=1;
+  if (c.kongReplacement) f+=1;
+  if (c.doubleKong)      f+=7;
+  if (c.blessingHeaven)  f+=13;
+  if (c.blessingEarth)   f+=13;
+  if (c.blessingMan)     f+=13;
+
+  if (!special) {
+    // B
+    if (c.allSequences)  f+=1;
+    if (c.allTriplets) f+=3;
+    if (c.allConcealedTriplets && !c.allQuadruplets) f+=5;
+    if (c.allQuadruplets)  f+=10;
+    // C
+    if (c.mixedFlush)    f+=3;
+    if (c.fullFlush)     f+=7;
+    if (c.mixedTerminals)f+=1;
+    if (c.allTerminals)  f+=10;
+    if (c.allHonours)    f+=7;
+    // D
+    f += c.dragonTriplets;
+    if (c.seatWindTriplet)   f+=1;
+    if (c.roundWindTriplet)  f+=1;
+    if (c.smallThreeDragons && !c.bigThreeDragons) f+=3;
+    if (c.bigThreeDragons)   f+=5;
+    if (c.smallFourWinds  && !c.bigFourWinds) f+=6;
+    if (c.bigFourWinds)      f+=13;
+  }
+  // E (always)
+  if (c.noFlowers)   f+=1;
+  f += c.seatFlower;
+  if (c.allFlowers)  f+=2;
+  if (c.sevenFlowers)f+=3;
+  if (c.eightFlowers)f+=8;
+  // F
+  if (c.sevenPairs)      f+=4;
+  if (c.thirteenOrphans) f+=13;
+  if (c.nineGates)       f+=13;
+  return f;
+}
+
+// ─────────────────────────────────────────────
+// PAYMENT CALCULATION
+// ─────────────────────────────────────────────
+function calcPayments(winnerIdx, winType, discarderIdx) {
+  const base = fanToBase(calcFan());
+  const dealerIdx = G.dealerIdx;
+  const dealerHasPlayer = !!G.players[dealerIdx];
+  const dealerWins = winnerIdx === dealerIdx && dealerHasPlayer;
+  // Kong replacement always counts as self-pick for payment purposes
+  const isSelfPick = winType === 'selfPick' || A.c.kongReplacement || A.c.doubleKong;
+  let payments = [0,0,0,0];
+
+  for (let i=0; i<4; i++) {
+    if (i === winnerIdx) continue;
+    if (!G.players[i]) continue;
+    let amt;
+    if (isSelfPick) {
+      amt = base * (G.selfPickDoubles ? 2 : 1);
+    } else {
+      if (G.discardOnlyDiscarderPays) {
+        amt = (i === discarderIdx) ? base * 2 : 0;
+      } else {
+        amt = (i === discarderIdx) ? base * 2 : base;
+      }
+    }
+    if (G.dealerDoubles) {
+      if (dealerWins) { amt *= 2; }
+      else if (i === dealerIdx && dealerHasPlayer) { amt *= 2; }
+    }
+    payments[i] = -amt;
+  }
+  payments[winnerIdx] = payments.reduce((s,p) => s + Math.abs(p), 0);
+  return payments;
+}
+
+// ─────────────────────────────────────────────
+// GAME ACTIONS
+// ─────────────────────────────────────────────
+window.setWinner = function(i) {
+  A.winner = (A.winner === i) ? null : i;
+  if (A.discarder === i) A.discarder = null;
+  render();
+};
+
+window.setWinType = function(type) {
+  A.winType = type;
+  A.c.selfPick = (type === 'selfPick');
+  if (type === 'selfPick') A.discarder = null;
+  render();
+};
+
+window.setDiscarder = function(i) {
+  A.discarder = (A.discarder === i) ? null : i;
+  render();
+};
+
+window.toggleFan = function(id, checked) {
+  A.c[id] = checked;
+  const c = A.c;
+
+  if (!checked) {
+    // Cascade deselections: removing a lower level must remove dependents above it
+    if (id === 'selfPick') { c.kongReplacement = false; c.doubleKong = false; }
+    if (id === 'kongReplacement') { c.doubleKong = false; }
+    if (id === 'smallThreeDragons' || id === 'bigThreeDragons') { c.dragonTriplets = 0; }
+    if (id === 'allTriplets') { c.mixedTerminals = false; c.allTerminals = false; c.allHonours = false; c.allConcealedTriplets = false; c.allQuadruplets = false; }
+    render(); return;
+  }
+
+  // Self-Pick drives win type
+  if (id === 'selfPick') { A.winType = 'selfPick'; A.discarder = null; }
+
+  // Special win group: mutually exclusive; imply win type
+  const specialWins = ['robbingKong','moonUnderSea','kongReplacement','doubleKong'];
+  if (specialWins.includes(id)) {
+    specialWins.forEach(k => { if (k !== id) c[k] = false; });
+    if (id === 'robbingKong') {
+      c.selfPick = false; A.winType = 'discard';
+    } else if (id === 'kongReplacement') {
+      c.selfPick = true; A.winType = 'selfPick'; A.discarder = null;
+    } else if (id === 'doubleKong') {
+      c.kongReplacement = true; c.selfPick = true; A.winType = 'selfPick'; A.discarder = null;
+    }
+    // moonUnderSea: no forced win type — can be self-pick or discard
+  }
+
+  // Blessing group: mutually exclusive; imply win type
+  const blessings = ['blessingHeaven','blessingEarth','blessingMan'];
+  if (blessings.includes(id)) {
+    blessings.forEach(k => { if (k !== id) c[k] = false; });
+    if (id === 'blessingHeaven') { c.selfPick = true; A.winType = 'selfPick'; A.discarder = null; }
+    else if (id === 'blessingEarth') { c.selfPick = false; A.winType = 'discard'; }
+    else if (id === 'blessingMan') { c.selfPick = true; A.winType = 'selfPick'; A.discarder = null; }
+  }
+
+  // Flower win: clear BCD, always self-pick
+  if (id === 'sevenFlowers' || id === 'eightFlowers') {
+    if (id === 'sevenFlowers') c.eightFlowers = false;
+    if (id === 'eightFlowers') c.sevenFlowers = false;
+    ['allSequences','allTriplets','allConcealedTriplets','allQuadruplets',
+     'mixedFlush','fullFlush','mixedTerminals','allTerminals','allHonours',
+     'dragonTriplets','seatWindTriplet','roundWindTriplet',
+     'smallThreeDragons','bigThreeDragons','smallFourWinds','bigFourWinds'
+    ].forEach(k => { A.c[k] = (typeof A.c[k] === 'number') ? 0 : false; });
+    c.selfPick = true; A.winType = 'selfPick'; A.discarder = null;
+  }
+
+  // Triplet-requiring hands: auto-set all triplets
+  if (id === 'mixedTerminals' || id === 'allTerminals' || id === 'allHonours' || id === 'allConcealedTriplets' || id === 'allQuadruplets') { c.allTriplets = true; }
+
+  // Three dragons: mutually exclusive, auto-set dragon triplet count
+  if (id === 'smallThreeDragons') { c.bigThreeDragons = false; c.dragonTriplets = 2; }
+  if (id === 'bigThreeDragons')   { c.smallThreeDragons = false; c.dragonTriplets = 3; }
+
+  // Special hands: mutually exclusive
+  const specialF = ['sevenPairs','thirteenOrphans','nineGates'];
+  if (specialF.includes(id)) { specialF.forEach(k => { if (k !== id) c[k] = false; }); }
+
+  render();
+};
+
+window.setDropdown = function(id, val) {
+  A.c[id] = parseInt(val);
+  render();
+};
+
+window.undoRound = function() {
+  if (!undoStack.length) return;
+  redoStack.push(snapshotG());
+  G = undoStack.pop();
+  resetA();
+  render();
+};
+
+window.redoRound = function() {
+  if (!redoStack.length) return;
+  undoStack.push(snapshotG());
+  G = redoStack.pop();
+  resetA();
+  render();
+};
+
+window.commitWin = function() {
+  if (A.winner === null) { alert('Select a winner.'); return; }
+  if (A.winType==='discard' && A.discarder===null) { alert('Select who discarded.'); return; }
+  pushUndo();
+
+  const fan = calcFan();
+  const belowMin = G.minFan > 0 && fan < G.minFan;
+  let payments, winType;
+
+  if (belowMin) {
+    const penaltyBase = fanToBase(G.forfeitFan);
+    payments = [0, 0, 0, 0];
+    let totalPaid = 0;
+    for (let i = 0; i < 4; i++) {
+      if (i !== A.winner && G.players[i]) { payments[i] = penaltyBase; totalPaid += penaltyBase; }
+    }
+    payments[A.winner] = -totalPaid;
+    winType = 'penalty';
+  } else {
+    payments = calcPayments(A.winner, A.winType, A.discarder);
+    winType = A.winType;
+  }
+
+  for (let i=0;i<4;i++) G.scores[i] += payments[i];
+  if (!belowMin) G.wins[A.winner] = (G.wins[A.winner] || 0) + 1;
+
+  G.history.unshift({
+    hand: G.handNum++,
+    winner: G.players[A.winner],
+    winnerIdx: A.winner,
+    fan, base: belowMin ? fanToBase(G.minFan) : fanToBase(fan),
+    winType,
+    discarder: A.discarder !== null ? G.players[A.discarder] : null,
+    payments: [...payments],
+    names: [...G.players],
+    dealer: G.players[G.dealerIdx],
+    roundWind: WINDS[G.roundWindIdx],
+  });
+
+  if (belowMin) {
+    advanceDealer(); // false win voids the hand but deal still rotates
+  } else if (A.winner !== G.dealerIdx) {
+    advanceDealer(); // normal non-dealer win
+  }
+  resetA();
+  render();
+};
+
+window.declareDraw = function() {
+  pushUndo();
+  G.history.unshift({
+    hand: G.handNum++,
+    winner: null, fan:null, base:null,
+    winType:'draw',
+    payments:[0,0,0,0],
+    names:[...G.players],
+    dealer: G.players[G.dealerIdx],
+    roundWind: WINDS[G.roundWindIdx],
+  });
+  resetA();
+  render();
+};
+
+function advanceDealer() {
+  const current = G.dealerIdx;
+  let next = (current + 1) % 4;
+  // Skip empty seats — dealer is always a real player
+  while (!G.players[next]) next = (next + 1) % 4;
+  G.dealerIdx = next;
+  // Round wind advances when the dealer index wraps numerically (full circle through all real players)
+  if (next < current) G.roundWindIdx = (G.roundWindIdx + 1) % 4;
+}
+
+window.startGame = function() {
+  const names = [0,1,2,3].map(i => document.getElementById('pi'+i).value.trim());
+  if (names.filter(Boolean).length < 2) { alert('Enter at least 2 player names.'); return; }
+  G.players = names;
+  G.minFan = parseInt(document.getElementById('minFanSel').value);
+  G.forfeitFan = parseInt(document.getElementById('forfeitFanSel').value);
+  G.flowersInGame = document.getElementById('flowersToggle').checked;
+  G.discardOnlyDiscarderPays = document.getElementById('discardOnlyDiscarderPays').checked;
+  G.selfPickDoubles = document.getElementById('selfPickDoubles').checked;
+  G.dealerDoubles = document.getElementById('dealerDoubles').checked;
+  G.pointsTable = document.getElementById('pointsTable').value;
+  G.scores = [0,0,0,0];
+  G.wins = [0,0,0,0];
+  G.history = [];
+  G.handNum = 1;
+  G.roundWindIdx = 0;
+  // Initial dealer = first non-empty seat (East if occupied, otherwise next real player)
+  G.dealerIdx = names.findIndex(n => !!n);
+  G.started = true;
+  undoStack = []; redoStack = [];
+  resetA();
+  render();
+};
+
+window.goToSetup = function() {
+  G.started = false;
+  render();
+};
+
+// ─────────────────────────────────────────────
+// RENDER
+// ─────────────────────────────────────────────
+function render() {
+  // Preserve fan checklist scroll position across re-renders
+  const fanScrollEl = document.getElementById('fanScroll');
+  const savedScroll = fanScrollEl ? fanScrollEl.scrollTop : 0;
+  document.getElementById('app').innerHTML = G.started ? gameHTML() : setupHTML();
+  if (G.started) {
+    const el = document.getElementById('fanScroll');
+    if (el) el.scrollTop = savedScroll;
+  }
+}
+
+// ── SETUP ──────────────────────────────────
+function setupHTML() {
+  return `
+  <div class="min-h-screen flex items-center justify-center p-4">
+    <div class="bg-gray-800 rounded-2xl shadow-2xl p-8 w-full max-w-md">
+      <div class="text-center mb-6">
+        <div class="text-5xl mb-2">🀄</div>
+        <h1 class="text-3xl font-bold text-amber-400">HK Mahjong Tracker</h1>
+        <p class="text-gray-400 text-sm mt-1">Enter player names in seat order — leave a seat blank for 3-player</p>
+      </div>
+      <div class="space-y-3 mb-5">
+        ${['East (Dealer)','South','West','North'].map((seat,i)=>`
+          <div class="flex items-center gap-3">
+            <div class="w-28 text-right text-sm font-semibold text-amber-400">${seat}</div>
+            <input id="pi${i}" type="text" placeholder="Player ${i+1}"
+              value="${G.players[i]}"
+              class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"/>
+          </div>`).join('')}
+      </div>
+      <div class="flex flex-col gap-1 mb-5">
+        <label class="text-gray-300 text-sm font-medium">Points Table</label>
+        <select id="pointsTable" class="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-400">
+          <option value="classic" ${G.pointsTable==='classic'?'selected':''}>Classic (1,2,4,8,16,16,16,32,32,32,64,64,64,128)</option>
+          <option value="new" ${G.pointsTable==='new'?'selected':''}>New (1,2,4,8,16,24,32,48,64,96,128,192,256,384)</option>
+        </select>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mb-5">
+        <div class="flex flex-col gap-1">
+          <label class="text-gray-300 text-sm font-medium">Minimum Fan</label>
+          <select id="minFanSel" class="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-400">
+            ${Array.from({length:14},(_,i)=>`<option value="${i}" ${G.minFan===i?'selected':''}>${i} Fan</option>`).join('')}
+          </select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-gray-300 text-sm font-medium">Forfeit Fan <span class="text-gray-500 text-xs">(false win penalty)</span></label>
+          <select id="forfeitFanSel" class="bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-400">
+            ${Array.from({length:14},(_,i)=>`<option value="${i}" ${G.forfeitFan===i?'selected':''}>${i} Fan</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="space-y-2 mb-5">
+        <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
+          <div>
+            <span class="text-white font-medium">Flowers &amp; Seasons</span>
+            <p class="text-gray-400 text-xs mt-0.5">Include flower/season tiles (Category E). Uncheck for no-flower variant.</p>
+          </div>
+          <input id="flowersToggle" type="checkbox" ${G.flowersInGame?'checked':''}
+            class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
+        </label>
+        <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
+          <div>
+            <span class="text-white font-medium">Self-Pick Doubles</span>
+            <p class="text-gray-400 text-xs mt-0.5">Self-pick winner: all losers pay 2× base. Off = 1× each.</p>
+          </div>
+          <input id="selfPickDoubles" type="checkbox" ${G.selfPickDoubles?'checked':''}
+            class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
+        </label>
+        <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
+          <div>
+            <span class="text-white font-medium">Dealer Doubles</span>
+            <p class="text-gray-400 text-xs mt-0.5">Dealer winning or losing doubles their payment amount.</p>
+          </div>
+          <input id="dealerDoubles" type="checkbox" ${G.dealerDoubles?'checked':''}
+            class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
+        </label>
+        <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
+          <div>
+            <span class="text-white font-medium">Discard: Only Discarder Pays</span>
+            <p class="text-gray-400 text-xs mt-0.5">On discard win, only the discarder pays (double). Others pay nothing.</p>
+          </div>
+          <input id="discardOnlyDiscarderPays" type="checkbox" ${G.discardOnlyDiscarderPays?'checked':''}
+            class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
+        </label>
+      </div>
+      <button onclick="startGame()" class="w-full bg-amber-500 hover:bg-amber-400 text-gray-900 font-bold py-3 rounded-xl text-lg transition-colors">
+        Start Game
+      </button>
+    </div>
+  </div>`;
+}
+
+// ── GAME ───────────────────────────────────
+function gameHTML() {
+  const fan = calcFan();
+  const base = fanToBase(fan);
+  return `
+  <div class="min-h-screen flex flex-col">
+    <!-- TOP BAR -->
+    <div class="bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+      <div class="flex items-center gap-2">
+        <span class="text-2xl">🀄</span>
+        <h1 class="text-xl font-bold text-amber-400">HK Mahjong Tracker</h1>
+      </div>
+      <div class="flex items-center gap-3 flex-wrap">
+        <div class="bg-gray-700 rounded-lg px-3 py-1.5 text-sm">
+          <span class="text-gray-400">Round:</span>
+          <span class="text-amber-400 font-bold ml-1">${WINDS[G.roundWindIdx]} ${WIND_CN[G.roundWindIdx]}</span>
+        </div>
+        <div class="bg-gray-700 rounded-lg px-3 py-1.5 text-sm">
+          <span class="text-gray-400">Dealer:</span>
+          <span class="text-green-400 font-bold ml-1">${G.players[G.dealerIdx]}</span>
+          <span class="text-gray-500 ml-1 text-xs">(East)</span>
+        </div>
+        <div class="bg-gray-700 rounded-lg px-3 py-1.5 text-sm">
+          <span class="text-gray-400">Min:</span>
+          <span class="text-white font-bold ml-1">${G.minFan}</span>
+          <span class="text-gray-500 mx-1">·</span>
+          <span class="text-gray-400">Forfeit:</span>
+          <span class="text-white font-bold ml-1">${G.forfeitFan}</span>
+        </div>
+        <button onclick="goToSetup()" class="text-gray-500 hover:text-gray-300 text-sm underline">← Setup</button>
+      </div>
+    </div>
+
+    <!-- MAIN -->
+    <div class="flex-1 p-4 grid grid-cols-1 xl:grid-cols-3 gap-4">
+      <!-- LEFT: Scores + History -->
+      <div class="xl:col-span-1 space-y-4">
+        ${scorePanelHTML()}
+        ${historyHTML()}
+      </div>
+      <!-- RIGHT: Action Panel -->
+      <div class="xl:col-span-2">
+        ${actionPanelHTML(fan, base)}
+      </div>
+    </div>
+  </div>`;
+}
+
+function scorePanelHTML() {
+  return `
+  <div class="bg-gray-800 rounded-xl p-4">
+    <h2 class="font-semibold text-amber-400 mb-3">Scoreboard</h2>
+    <div class="space-y-2">
+      ${G.players.map((name,i)=>{
+        const sw = seatWind(i);
+        const isDealer = i===G.dealerIdx;
+        const isEmpty = !name;
+        const score = G.scores[i];
+        return `
+        <div class="flex items-center justify-between rounded-lg px-3 py-2.5
+          ${isEmpty?'bg-gray-800 border border-dashed border-gray-700 opacity-50':isDealer?'bg-amber-950 border border-amber-700':'bg-gray-700'}">
+          <div class="flex items-center gap-2">
+            ${isDealer && !isEmpty?'<span class="text-amber-400 text-xs">★</span>':'<span class="w-3"></span>'}
+            <span class="font-semibold ${isEmpty?'text-gray-600 italic':'text-white'}">${isEmpty?'(Empty)':name}</span>
+            <span class="text-xs px-1.5 py-0.5 rounded ${isEmpty?'bg-gray-700 text-gray-600':'bg-gray-600 text-gray-300'}">${sw}</span>
+          </div>
+          ${isEmpty?'<span class="text-gray-700 text-sm">—</span>':`
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-gray-400">${G.wins[i]||0}W</span>
+            <span class="font-bold text-lg ${score>=0?'text-green-400':'text-red-400'}">${score>=0?'+':''}${score}</span>
+          </div>`}
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function historyHTML() {
+  const canUndo = undoStack.length > 0;
+  const canRedo = redoStack.length > 0;
+  const undoBtn = `
+    <div class="flex items-center gap-1">
+      <button onclick="undoRound()" ${canUndo?'':'disabled'} title="Undo last round"
+        class="text-xs px-2 py-1 rounded-lg font-medium transition-colors
+          ${canUndo?'bg-gray-600 hover:bg-gray-500 text-white':'bg-gray-700 text-gray-600 cursor-not-allowed'}">
+        ↩ Undo${canUndo?' ('+undoStack.length+')':''}
+      </button>
+      <button onclick="redoRound()" ${canRedo?'':'disabled'} title="Redo"
+        class="text-xs px-2 py-1 rounded-lg font-medium transition-colors
+          ${canRedo?'bg-gray-600 hover:bg-gray-500 text-white':'bg-gray-700 text-gray-600 cursor-not-allowed'}">
+        ↪ Redo${canRedo?' ('+redoStack.length+')':''}
+      </button>
+    </div>`;
+  if (!G.history.length) return `
+  <div class="bg-gray-800 rounded-xl p-4">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="font-semibold text-amber-400">History</h2>
+      ${undoBtn}
+    </div>
+    <p class="text-gray-500 text-sm">No hands played yet.</p>
+  </div>`;
+  return `
+  <div class="bg-gray-800 rounded-xl p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="font-semibold text-amber-400">History</h2>
+      ${undoBtn}
+    </div>
+    <div class="space-y-2 max-h-72 overflow-y-auto scrollbar-thin pr-1">
+      ${G.history.map(h=>{
+        const isPenalty = h.winType==='penalty';
+        const isDraw = h.winType==='draw';
+        return `
+        <div class="bg-gray-700 rounded-lg px-3 py-2 text-sm">
+          <div class="flex justify-between items-start gap-2">
+            <span class="text-gray-400 shrink-0">H${h.hand} · ${h.roundWind}</span>
+            ${isDraw    ? '<span class="text-yellow-400">Draw</span>'
+            : isPenalty ? `<span class="text-red-400 font-medium">${h.winner} false win</span>`
+                        : `<span class="text-green-400 font-medium">${h.winner} won</span>`}
+          </div>
+          ${!isDraw ? `
+          <div class="text-xs text-gray-500 mt-1">
+            ${isPenalty
+              ? `${h.fan}fan (below min ${G.minFan}) — ${G.forfeitFan}-fan forfeit, ${h.base}pts each`
+              : `${h.fan}fan → ${h.base}pts${h.winType==='selfPick'?' (self-pick)':` (discard by ${h.discarder})`}`}
+          </div>
+          <div class="text-xs mt-0.5">
+            ${h.payments.map((p,i)=>p?`<span class="${p>0?'text-green-400':'text-red-400'}">${h.names[i]}: ${p>0?'+':''}${p}</span>`:'').filter(Boolean).join('<span class="text-gray-600"> · </span>')}
+          </div>` : ''}
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function actionPanelHTML(fan, base) {
+  const special = isSpecialHand();
+  const belowMin = fan < G.minFan;
+  return `
+  <div class="bg-gray-800 rounded-xl p-4 flex flex-col gap-4">
+    <h2 class="font-semibold text-amber-400">Score a Hand</h2>
+
+    <!-- Winner + Win Type row -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <!-- Winner -->
+      <div>
+        <label class="text-xs text-gray-400 uppercase tracking-wide block mb-2">Winner</label>
+        <div class="grid grid-cols-2 gap-2">
+          ${G.players.map((name,i)=> name ? `
+            <button onclick="setWinner(${i})"
+              class="py-2 px-2 rounded-lg text-sm font-medium transition-colors truncate
+                ${A.winner===i?'bg-amber-500 text-gray-900':'bg-gray-700 hover:bg-gray-600 text-white'}">
+              ${name}
+            </button>` : '').join('')}
+        </div>
+      </div>
+      <!-- Win Type -->
+      <div>
+        <label class="text-xs text-gray-400 uppercase tracking-wide block mb-2">Win Type</label>
+        <div class="grid grid-cols-2 gap-2">
+          <button onclick="setWinType('selfPick')"
+            class="py-2 px-2 rounded-lg text-sm font-medium transition-colors
+              ${A.winType==='selfPick'?'bg-blue-500 text-white':'bg-gray-700 hover:bg-gray-600 text-white'}">
+            Self-Pick
+          </button>
+          <button onclick="setWinType('discard')"
+            class="py-2 px-2 rounded-lg text-sm font-medium transition-colors
+              ${A.winType==='discard'?'bg-purple-500 text-white':'bg-gray-700 hover:bg-gray-600 text-white'}">
+            Discard
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Discarder -->
+    ${A.winType==='discard'?`
+    <div>
+      <label class="text-xs text-gray-400 uppercase tracking-wide block mb-2">Discarder</label>
+      <div class="grid grid-cols-4 gap-2">
+        ${G.players.map((name,i)=>{
+          if (!name) return ''; // skip empty seats
+          const dis = i===A.winner;
+          return `<button onclick="${dis?'':` setDiscarder(${i})`}"
+            class="py-2 px-1 rounded-lg text-sm font-medium transition-colors truncate
+              ${A.discarder===i?'bg-purple-500 text-white':dis?'bg-gray-800 text-gray-600 cursor-not-allowed':'bg-gray-700 hover:bg-gray-600 text-white'}"
+            ${dis?'disabled':''}>
+            ${name}
+          </button>`;}).join('')}
+      </div>
+    </div>`:''}
+
+    <!-- Fan checklist -->
+    <div>
+      <h3 class="text-sm font-semibold text-gray-300 mb-3">Fan Conditions</h3>
+      <div id="fanScroll" class="space-y-4 max-h-96 overflow-y-auto scrollbar-thin pr-1">
+        ${CATS.map(cat=>{
+          const bcd = ['B','C','D'].includes(cat.id);
+          const flowerWin = isFlowerWin();
+          if (cat.id === 'E' && !G.flowersInGame) return ''; // flowers disabled in config
+          if ((special || flowerWin) && bcd) return `
+            <div class="opacity-30 select-none">
+              <div class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+                ${cat.id}: ${cat.label}
+                <span class="text-red-400 ml-2 normal-case">(Disabled — ${flowerWin?'Flower Win (花糊)':'Special Hand'} active)</span>
+              </div>
+            </div>`;
+          return `
+          <div>
+            <div class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">${cat.id}: ${cat.label}</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              ${cat.items.map(item=>fanItemHTML(item)).join('')}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- Fan total bar -->
+    <div class="rounded-xl px-4 py-3 ${belowMin?'bg-red-950 border border-red-700':'bg-gray-700'}">
+      <div class="flex items-center justify-between">
+        <div>
+          <span class="text-gray-400 text-sm">Total Fan: </span>
+          <span class="text-3xl font-bold ${belowMin?'text-red-400':'text-amber-400'}">${fan}</span>
+          <span class="text-gray-500 text-xs ml-1">(min ${G.minFan})</span>
+        </div>
+        <div class="text-right">
+          <span class="text-gray-400 text-sm">${belowMin?'Penalty Base:':'Base Points:'} </span>
+          <span class="text-3xl font-bold ${belowMin?'text-red-400':'text-green-400'}">${belowMin?fanToBase(G.forfeitFan):base}</span>
+        </div>
+      </div>
+      ${belowMin?`<p class="text-red-400 text-xs mt-1">⚠ False win — declarer pays each player ${fanToBase(G.forfeitFan)} pts (${G.forfeitFan}-fan forfeit). Deal rotates.</p>`:''}
+    </div>
+
+    <!-- Payment preview -->
+    ${A.winner!==null && (A.winType!=='discard'||A.discarder!==null) ? paymentPreviewHTML(belowMin) : ''}
+
+    <!-- Buttons -->
+    <div class="grid grid-cols-2 gap-3">
+      <button onclick="declareDraw()"
+        class="py-3 rounded-xl font-semibold bg-gray-600 hover:bg-gray-500 text-white transition-colors text-sm">
+        Draw / No Winner
+      </button>
+      <button onclick="commitWin()"
+        class="py-3 rounded-xl font-semibold transition-colors text-sm font-semibold
+          ${belowMin?'bg-red-600 hover:bg-red-500 text-white':'bg-amber-500 hover:bg-amber-400 text-gray-900'}">
+        ${belowMin?'Declare False Win ✗':'Commit Win ✓'}
+      </button>
+    </div>
+  </div>`;
+}
+
+function paymentPreviewHTML(belowMin) {
+  let payments;
+  if (belowMin) {
+    const penaltyBase = fanToBase(G.forfeitFan);
+    payments = [0, 0, 0, 0];
+    let totalPaid = 0;
+    for (let i = 0; i < 4; i++) {
+      if (i !== A.winner && G.players[i]) { payments[i] = penaltyBase; totalPaid += penaltyBase; }
+    }
+    payments[A.winner] = -totalPaid;
+  } else {
+    payments = calcPayments(A.winner, A.winType, A.discarder);
+  }
+  return `
+  <div class="${belowMin?'bg-red-950 border border-red-800':'bg-gray-700'} rounded-xl px-4 py-3">
+    <div class="text-xs ${belowMin?'text-red-400':'text-gray-400'} uppercase tracking-wide mb-2">
+      ${belowMin?'Penalty Preview':'Payment Preview'}
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      ${G.players.map((name,i)=> !name ? '' : `
+        <div class="text-center">
+          <div class="text-xs text-gray-400 truncate">${name}</div>
+          <div class="font-bold ${payments[i]>0?'text-green-400':payments[i]<0?'text-red-400':'text-gray-500'}">
+            ${payments[i]>0?'+':''}${payments[i]}
+          </div>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+function fanItemHTML(item) {
+  const st = itemState(item.id);
+  if (st.hidden) return '';
+  const c = A.c;
+
+  const tipAttrs = `onmouseenter="showTip(event,'${item.id}')" onmouseleave="hideTip()" onmousemove="moveTip(event)"`;
+
+  if (item.type === 'dropdown') {
+    return `
+    <div class="flex items-center justify-between rounded-lg px-3 py-2 ${st.disabled?(st.autoChecked?'auto-checked-label':'opacity-40'):'bg-gray-700'}">
+      <span class="text-sm text-gray-300 cursor-help" ${tipAttrs}>${item.label}${st.autoChecked?'<span class="text-xs text-amber-500 ml-1">(auto)</span>':''} <span class="text-gray-500 text-xs">ⓘ</span></span>
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-amber-400">+${item.fan}/ea</span>
+        <select onchange="setDropdown('${item.id}',this.value)"
+          class="bg-gray-600 text-white text-sm rounded px-2 py-1 focus:outline-none border border-gray-500"
+          ${st.disabled?'disabled':''}>
+          ${Array.from({length:item.max+1},(_,i)=>`<option value="${i}" ${c[item.id]===i?'selected':''}>${i}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
+  }
+
+  const checked = st.autoChecked || c[item.id];
+  return `
+  <label class="flex items-center justify-between rounded-lg px-3 py-2 cursor-pointer transition-colors select-none
+    ${st.disabled?'opacity-40 cursor-not-allowed bg-gray-700':st.autoChecked?'auto-checked-label':'bg-gray-700 hover:bg-gray-600'}">
+    <div class="flex items-center gap-2 flex-1 min-w-0">
+      <input type="checkbox"
+        ${checked?'checked':''}
+        ${st.disabled?'disabled':''}
+        onchange="toggleFan('${item.id}',this.checked)"
+        class="w-4 h-4 rounded accent-amber-400 flex-shrink-0" />
+      <span class="text-sm text-gray-300 truncate">${item.label}${st.autoChecked?'<span class="text-xs text-amber-500 ml-1">(auto)</span>':''}</span>
+    </div>
+    <span class="text-xs text-amber-400 shrink-0 ml-2 cursor-help" ${tipAttrs}>+${item.fan} ⓘ</span>
+  </label>`;
+}
+
+// ─────────────────────────────────────────────
+// BOOT
+// ─────────────────────────────────────────────
+render();
+</script>
+</body>
+</html>
