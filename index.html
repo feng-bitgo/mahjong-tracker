@@ -65,7 +65,8 @@ let G = {
   discardOnlyDiscarderPays: false,
   selfPickDoubles: true,
   dealerDoubles: true,
-  pointsTable: 'classic',
+  sevenPairsAllowed: true,
+  pointsTable: 'new',
   started: false,
   history: [],
   handNum: 1
@@ -250,6 +251,7 @@ function itemState(id) {
                'dragonTriplets','seatWindTriplet','roundWindTriplet','smallThreeDragons',
                'bigThreeDragons','smallFourWinds','bigFourWinds'];
   if ((special || isFlowerWin()) && BCD.includes(id)) return {disabled:true, autoChecked:false, hidden:true};
+  if (id === 'sevenPairs' && !G.sevenPairsAllowed) return {disabled:true, autoChecked:false, hidden:true};
 
   if (id === 'allTriplets' && isTripletAutoChecked())
     return {disabled:true, autoChecked:true, hidden:false};
@@ -311,7 +313,7 @@ function calcFan() {
   if (c.sevenFlowers)f+=3;
   if (c.eightFlowers)f+=8;
   // F
-  if (c.sevenPairs)      f+=4;
+  if (G.sevenPairsAllowed && c.sevenPairs) f+=4;
   if (c.thirteenOrphans) f+=13;
   if (c.nineGates)       f+=13;
   return f;
@@ -542,6 +544,7 @@ window.startGame = function() {
   G.discardOnlyDiscarderPays = document.getElementById('discardOnlyDiscarderPays').checked;
   G.selfPickDoubles = document.getElementById('selfPickDoubles').checked;
   G.dealerDoubles = document.getElementById('dealerDoubles').checked;
+  G.sevenPairsAllowed = document.getElementById('sevenPairsAllowed').checked;
   G.pointsTable = document.getElementById('pointsTable').value;
   G.scores = [0,0,0,0];
   G.wins = [0,0,0,0];
@@ -638,6 +641,14 @@ function setupHTML() {
             <p class="text-gray-400 text-xs mt-0.5">Dealer winning or losing doubles their payment amount.</p>
           </div>
           <input id="dealerDoubles" type="checkbox" ${G.dealerDoubles?'checked':''}
+            class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
+        </label>
+        <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
+          <div>
+            <span class="text-white font-medium">Allow Seven Pairs</span>
+            <p class="text-gray-400 text-xs mt-0.5">Enable Seven Pairs (Category F) as a valid scoring pattern.</p>
+          </div>
+          <input id="sevenPairsAllowed" type="checkbox" ${G.sevenPairsAllowed?'checked':''}
             class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
         </label>
         <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
