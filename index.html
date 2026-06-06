@@ -65,7 +65,8 @@ let G = {
   discardOnlyDiscarderPays: false,
   selfPickDoubles: true,
   dealerDoubles: true,
-  pointsTable: 'classic',
+  sevenPairsAllowed: true,
+  pointsTable: 'new',
   started: false,
   history: [],
   handNum: 1
@@ -140,7 +141,7 @@ const CATS = [
   { id:'C', label:'Suit & Terminal Patterns', items:[
     {id:'mixedFlush',    label:'Mixed Flush',     fan:3},
     {id:'fullFlush',     label:'Full Flush',      fan:7},
-    {id:'mixedTerminals',label:'Mixed Terminals', fan:1},
+    {id:'mixedTerminals',label:'Mixed Terminals', fan:4},
     {id:'allTerminals',  label:'All Terminals',   fan:10},
     {id:'allHonours',    label:'All Honours',     fan:7},
   ]},
@@ -189,7 +190,7 @@ const TOOLTIPS = {
   // C
   mixedFlush:         'Hun Yi Se (混一色): All tiles from one suit plus wind/dragon honour tiles. Incompatible with Full Flush and All Honours.',
   fullFlush:          'Qing Yi Se (清一色): All tiles from a single suit with no honour tiles. Incompatible with Mixed Flush and All Honours.',
-  mixedTerminals:     'Hun Lao Tou (混么九): Every set contains at least one terminal (1 or 9) or honour tile. Automatically includes All Triplets (+3 fan) for 4 fan total.',
+  mixedTerminals:     'Hun Lao Tou (混么九): Every set or pair contains only terminals (1 or 9) and honour tiles. Add All Triplets (+3 fan) for a 7-fan triplet hand, or Seven Pairs (+4 fan) for an 8-fan seven-pairs hand.',
   allTerminals:       'Qing Lao Tou (清么九): All tiles are terminals (1s and 9s only). Automatically includes All Triplets (+3 fan) for 13 fan total. Incompatible with All Sequences and All Honours.',
   allHonours:         'Zi Yi Se (字一色): All tiles are honour tiles (winds and dragons). Automatically includes All Triplets (+3 fan) for 10 fan total. Incompatible with all suit/terminal patterns.',
   // D
@@ -207,7 +208,7 @@ const TOOLTIPS = {
   sevenFlowers:       'You have seven of the eight flower/season tiles. +3 fan.',
   eightFlowers:       'You have all eight flower and season tiles. +8 fan limit.',
   // F
-  sevenPairs:         'Qi Dui (七對): The winning hand consists of seven pairs instead of four sets + one pair. Disables B/C/D categories.',
+  sevenPairs:         'Qi Dui (七對): The winning hand consists of seven pairs instead of four sets + one pair. Can combine with compatible suit and terminal patterns.',
   thirteenOrphans:    'Shi San Yao (十三么): One each of 1m,9m,1p,9p,1s,9s and all seven honours, plus one duplicate. 13-fan limit. Disables B/C/D.',
   nineGates:          'Jiu Lian Bao Deng (九蓮寶燈): 1-1-1-2-3-4-5-6-7-8-9-9-9 in one suit plus any tile of the same suit. 13-fan limit. Disables B/C/D.',
 };
@@ -229,7 +230,7 @@ function seatWind(playerIdx) {
 }
 
 function isSpecialHand() {
-  return A.c.sevenPairs || A.c.thirteenOrphans || A.c.nineGates;
+  return A.c.thirteenOrphans || A.c.nineGates;
 }
 
 function isFlowerWin() {
@@ -237,7 +238,7 @@ function isFlowerWin() {
 }
 
 function isTripletAutoChecked() {
-  return A.c.allHonours || A.c.allTerminals || A.c.mixedTerminals || A.c.allConcealedTriplets || A.c.allQuadruplets;
+  return A.c.allHonours || A.c.allTerminals || A.c.allConcealedTriplets || A.c.allQuadruplets;
 }
 
 // Returns {disabled, autoChecked, hidden} for a given item id
@@ -250,6 +251,7 @@ function itemState(id) {
                'dragonTriplets','seatWindTriplet','roundWindTriplet','smallThreeDragons',
                'bigThreeDragons','smallFourWinds','bigFourWinds'];
   if ((special || isFlowerWin()) && BCD.includes(id)) return {disabled:true, autoChecked:false, hidden:true};
+  if (id === 'sevenPairs' && !G.sevenPairsAllowed) return {disabled:true, autoChecked:false, hidden:true};
 
   if (id === 'allTriplets' && isTripletAutoChecked())
     return {disabled:true, autoChecked:true, hidden:false};
@@ -292,7 +294,7 @@ function calcFan() {
     // C
     if (c.mixedFlush)    f+=3;
     if (c.fullFlush)     f+=7;
-    if (c.mixedTerminals)f+=1;
+    if (c.mixedTerminals)f+=4;
     if (c.allTerminals)  f+=10;
     if (c.allHonours)    f+=7;
     // D
@@ -311,7 +313,7 @@ function calcFan() {
   if (c.sevenFlowers)f+=3;
   if (c.eightFlowers)f+=8;
   // F
-  if (c.sevenPairs)      f+=4;
+  if (G.sevenPairsAllowed && c.sevenPairs) f+=4;
   if (c.thirteenOrphans) f+=13;
   if (c.nineGates)       f+=13;
   return f;
@@ -382,7 +384,7 @@ window.toggleFan = function(id, checked) {
     if (id === 'selfPick') { c.kongReplacement = false; c.doubleKong = false; }
     if (id === 'kongReplacement') { c.doubleKong = false; }
     if (id === 'smallThreeDragons' || id === 'bigThreeDragons') { c.dragonTriplets = 0; }
-    if (id === 'allTriplets') { c.mixedTerminals = false; c.allTerminals = false; c.allHonours = false; c.allConcealedTriplets = false; c.allQuadruplets = false; }
+    if (id === 'allTriplets') { c.allTerminals = false; c.allHonours = false; c.allConcealedTriplets = false; c.allQuadruplets = false; }
     render(); return;
   }
 
@@ -425,7 +427,7 @@ window.toggleFan = function(id, checked) {
   }
 
   // Triplet-requiring hands: auto-set all triplets
-  if (id === 'mixedTerminals' || id === 'allTerminals' || id === 'allHonours' || id === 'allConcealedTriplets' || id === 'allQuadruplets') { c.allTriplets = true; }
+  if (id === 'allTerminals' || id === 'allHonours' || id === 'allConcealedTriplets' || id === 'allQuadruplets') { c.allTriplets = true; }
 
   // Three dragons: mutually exclusive, auto-set dragon triplet count
   if (id === 'smallThreeDragons') { c.bigThreeDragons = false; c.dragonTriplets = 2; }
@@ -542,6 +544,7 @@ window.startGame = function() {
   G.discardOnlyDiscarderPays = document.getElementById('discardOnlyDiscarderPays').checked;
   G.selfPickDoubles = document.getElementById('selfPickDoubles').checked;
   G.dealerDoubles = document.getElementById('dealerDoubles').checked;
+  G.sevenPairsAllowed = document.getElementById('sevenPairsAllowed').checked;
   G.pointsTable = document.getElementById('pointsTable').value;
   G.scores = [0,0,0,0];
   G.wins = [0,0,0,0];
@@ -638,6 +641,14 @@ function setupHTML() {
             <p class="text-gray-400 text-xs mt-0.5">Dealer winning or losing doubles their payment amount.</p>
           </div>
           <input id="dealerDoubles" type="checkbox" ${G.dealerDoubles?'checked':''}
+            class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
+        </label>
+        <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
+          <div>
+            <span class="text-white font-medium">Allow Seven Pairs</span>
+            <p class="text-gray-400 text-xs mt-0.5">Enable Seven Pairs (Category F) as a valid scoring pattern.</p>
+          </div>
+          <input id="sevenPairsAllowed" type="checkbox" ${G.sevenPairsAllowed?'checked':''}
             class="w-5 h-5 rounded accent-amber-400 ml-4 flex-shrink-0" />
         </label>
         <label class="flex items-center justify-between bg-gray-700 rounded-xl px-4 py-3 cursor-pointer select-none">
