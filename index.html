@@ -140,7 +140,7 @@ const CATS = [
   { id:'C', label:'Suit & Terminal Patterns', items:[
     {id:'mixedFlush',    label:'Mixed Flush',     fan:3},
     {id:'fullFlush',     label:'Full Flush',      fan:7},
-    {id:'mixedTerminals',label:'Mixed Terminals', fan:1},
+    {id:'mixedTerminals',label:'Mixed Terminals', fan:4},
     {id:'allTerminals',  label:'All Terminals',   fan:10},
     {id:'allHonours',    label:'All Honours',     fan:7},
   ]},
@@ -189,7 +189,7 @@ const TOOLTIPS = {
   // C
   mixedFlush:         'Hun Yi Se (混一色): All tiles from one suit plus wind/dragon honour tiles. Incompatible with Full Flush and All Honours.',
   fullFlush:          'Qing Yi Se (清一色): All tiles from a single suit with no honour tiles. Incompatible with Mixed Flush and All Honours.',
-  mixedTerminals:     'Hun Lao Tou (混么九): Every set contains at least one terminal (1 or 9) or honour tile. Automatically includes All Triplets (+3 fan) for 4 fan total.',
+  mixedTerminals:     'Hun Lao Tou (混么九): Every set or pair contains only terminals (1 or 9) and honour tiles. Add All Triplets (+3 fan) for a 7-fan triplet hand, or Seven Pairs (+4 fan) for an 8-fan seven-pairs hand.',
   allTerminals:       'Qing Lao Tou (清么九): All tiles are terminals (1s and 9s only). Automatically includes All Triplets (+3 fan) for 13 fan total. Incompatible with All Sequences and All Honours.',
   allHonours:         'Zi Yi Se (字一色): All tiles are honour tiles (winds and dragons). Automatically includes All Triplets (+3 fan) for 10 fan total. Incompatible with all suit/terminal patterns.',
   // D
@@ -207,7 +207,7 @@ const TOOLTIPS = {
   sevenFlowers:       'You have seven of the eight flower/season tiles. +3 fan.',
   eightFlowers:       'You have all eight flower and season tiles. +8 fan limit.',
   // F
-  sevenPairs:         'Qi Dui (七對): The winning hand consists of seven pairs instead of four sets + one pair. Disables B/C/D categories.',
+  sevenPairs:         'Qi Dui (七對): The winning hand consists of seven pairs instead of four sets + one pair. Can combine with compatible suit and terminal patterns.',
   thirteenOrphans:    'Shi San Yao (十三么): One each of 1m,9m,1p,9p,1s,9s and all seven honours, plus one duplicate. 13-fan limit. Disables B/C/D.',
   nineGates:          'Jiu Lian Bao Deng (九蓮寶燈): 1-1-1-2-3-4-5-6-7-8-9-9-9 in one suit plus any tile of the same suit. 13-fan limit. Disables B/C/D.',
 };
@@ -229,7 +229,7 @@ function seatWind(playerIdx) {
 }
 
 function isSpecialHand() {
-  return A.c.sevenPairs || A.c.thirteenOrphans || A.c.nineGates;
+  return A.c.thirteenOrphans || A.c.nineGates;
 }
 
 function isFlowerWin() {
@@ -237,7 +237,7 @@ function isFlowerWin() {
 }
 
 function isTripletAutoChecked() {
-  return A.c.allHonours || A.c.allTerminals || A.c.mixedTerminals || A.c.allConcealedTriplets || A.c.allQuadruplets;
+  return A.c.allHonours || A.c.allTerminals || A.c.allConcealedTriplets || A.c.allQuadruplets;
 }
 
 // Returns {disabled, autoChecked, hidden} for a given item id
@@ -292,7 +292,7 @@ function calcFan() {
     // C
     if (c.mixedFlush)    f+=3;
     if (c.fullFlush)     f+=7;
-    if (c.mixedTerminals)f+=1;
+    if (c.mixedTerminals)f+=4;
     if (c.allTerminals)  f+=10;
     if (c.allHonours)    f+=7;
     // D
@@ -382,7 +382,7 @@ window.toggleFan = function(id, checked) {
     if (id === 'selfPick') { c.kongReplacement = false; c.doubleKong = false; }
     if (id === 'kongReplacement') { c.doubleKong = false; }
     if (id === 'smallThreeDragons' || id === 'bigThreeDragons') { c.dragonTriplets = 0; }
-    if (id === 'allTriplets') { c.mixedTerminals = false; c.allTerminals = false; c.allHonours = false; c.allConcealedTriplets = false; c.allQuadruplets = false; }
+    if (id === 'allTriplets') { c.allTerminals = false; c.allHonours = false; c.allConcealedTriplets = false; c.allQuadruplets = false; }
     render(); return;
   }
 
@@ -425,7 +425,7 @@ window.toggleFan = function(id, checked) {
   }
 
   // Triplet-requiring hands: auto-set all triplets
-  if (id === 'mixedTerminals' || id === 'allTerminals' || id === 'allHonours' || id === 'allConcealedTriplets' || id === 'allQuadruplets') { c.allTriplets = true; }
+  if (id === 'allTerminals' || id === 'allHonours' || id === 'allConcealedTriplets' || id === 'allQuadruplets') { c.allTriplets = true; }
 
   // Three dragons: mutually exclusive, auto-set dragon triplet count
   if (id === 'smallThreeDragons') { c.bigThreeDragons = false; c.dragonTriplets = 2; }
